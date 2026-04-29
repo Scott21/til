@@ -1,8 +1,8 @@
 # Shipping iOS to TestFlight from GitHub Actions
 
-**What this is.** A complete, opinionated, solo-developer-friendly pattern for shipping iOS apps to TestFlight from GitHub Actions — no local Mac needed for the build, no Xcode project open on your desktop. Every push to `main` produces a signed build on your phone. **Part 2** covers an optional cost optimization: route CI to your own Mac when it's available, with automatic fallback to GitHub-hosted runners when it isn't.
+**What this is.** A complete, opinionated, solo-developer-friendly pattern for shipping iOS apps to TestFlight from GitHub Actions. Every push to `main` produces a signed build on your phone — no local Mac, no Xcode project open on your desktop. **Part 2** covers an optional cost optimization: route CI to your own Mac when it's available, with automatic fallback to GitHub-hosted runners when it isn't.
 
-**Why it's shaped this way.** The pipeline is designed so the whole ship loop — code, review, merge, deploy — runs from a browser: Claude Code on the web, GitHub Codespaces, or the GitHub web UI. No local Mac required to put a signed build on a phone. The same shape adapts to any project where you want CI to be the only build environment that matters; iOS just happens to be where the Apple-side complexity makes the payoff most visible.
+**Why it's shaped this way.** The whole ship loop — code, review, merge, deploy — runs from a browser: Claude Code on the web, GitHub Codespaces, or the GitHub web UI. The same shape adapts to any project where you want CI to be the only build environment that matters; iOS just happens to be where the Apple-side complexity makes the payoff most visible.
 
 **Last verified end-to-end in April 2026** against macos-26, Xcode 26.4, Apple's 2026 SDK floor, and current Fastlane. Versions move; the shape of the pattern doesn't.
 

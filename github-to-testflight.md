@@ -553,6 +553,61 @@ The deploy-on-push-to-main pattern above can be paired with a PR-level test gate
 
 **Footgun if you pair this with a [repository ruleset](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets):** a workflow whose check is in the ruleset's required-checks list must run on **every** PR — no `paths-ignore`, no job-level `if:` that early-exits. A path-skipped required check reports as **missing** to the ruleset (not passing), and the merge is blocked even by `gh pr merge --admin`. Either the workflow runs every PR, or the check comes out of the required list.
 
+### Optional: keep the agent loop tight (subscribe + heartbeat)
+
+The failure-comment above is half the story — it makes red builds *readable* by an agent. The other half is making the agent **notice** them promptly so it can push a fix without waiting for the human to ping. Two pieces, both specific to running Claude Code (or any MCP-aware agent) in a cloud/web session:
+
+1. **Subscribe to PR activity on PR creation.** GitHub's MCP server exposes `subscribe_pr_activity`. Calling it once after the user clicks "Create PR" turns PR events — failure comments from `pr-test.yml`, check completions, label changes — into webhooks delivered to the active session. No polling, no re-reading the whole comment thread. The catch: payloads only land while the model is mid-turn. Anything that arrives during idle queues until the user next pings.
+
+2. **Arm a heartbeat watcher to keep the session mid-turn.** The harness sleeps when no tool is producing output. A trivial `Monitor`-style background script that emits one line every ~2 minutes counts as turn activity, so queued webhooks surface in real time instead of at next ping. Validated on a real iterative-fix cycle: with the heartbeat, each `pr-test.yml` failure comment surfaced within ~30s of landing and the next fix pushed immediately; without it, the same loop would have stalled until the human came back. Poll `git ls-remote origin` for `main` and the PR head every 30s so you also get a free state-change signal (PR head moved → new push detected; main moved → PR likely merged → exit cleanly).
+
+```bash
+# Background watcher to pair with mcp__github__subscribe_pr_activity.
+# Heartbeat keeps a cloud Claude Code session awake so PR webhooks
+# deliver in real time. Exits when main advances (merge) or after 1h.
+PR_BRANCH="<your-branch-name>"
+HEARTBEAT_INTERVAL=120
+LAST_HEARTBEAT=0
+LAST_MAIN_SHA=""
+LAST_PR_SHA=""
+START=$(date +%s); POLL_COUNT=0
+
+while true; do
+    NOW=$(date +%s); ELAPSED=$((NOW - START)); POLL_COUNT=$((POLL_COUNT + 1))
+    CUR_MAIN=$(git ls-remote origin main 2>/dev/null | awk '{print $1}' | head -1)
+    CUR_PR=$(git ls-remote origin "$PR_BRANCH" 2>/dev/null | awk '{print $1}' | head -1)
+
+    if [ -z "$LAST_MAIN_SHA" ] && [ -n "$CUR_MAIN" ]; then
+        LAST_MAIN_SHA=$CUR_MAIN; LAST_PR_SHA=$CUR_PR
+        echo "watch armed: main=${CUR_MAIN:0:10} PR=${CUR_PR:0:10}"
+    fi
+    if [ -n "$CUR_PR" ] && [ "$CUR_PR" != "$LAST_PR_SHA" ]; then
+        echo "$PR_BRANCH head: ${LAST_PR_SHA:0:10} → ${CUR_PR:0:10}"
+        LAST_PR_SHA=$CUR_PR
+    fi
+    if [ -n "$CUR_MAIN" ] && [ "$CUR_MAIN" != "$LAST_MAIN_SHA" ]; then
+        echo "main moved: ${LAST_MAIN_SHA:0:10} → ${CUR_MAIN:0:10}"
+        echo "PR detected as merged. Exiting watcher."
+        exit 0
+    fi
+    if [ $((NOW - LAST_HEARTBEAT)) -ge $HEARTBEAT_INTERVAL ]; then
+        echo "heartbeat ($((ELAPSED / 60))min, poll #${POLL_COUNT}): main=${CUR_MAIN:0:10} PR=${CUR_PR:0:10}"
+        LAST_HEARTBEAT=$NOW
+    fi
+    sleep 30
+done
+```
+
+**Auto-fix policy.** A live event stream without policy is a runaway. The rules that hold up in practice:
+
+- **Auto-fix small/unambiguous failures** — Equatable conformance, `MainActor` isolation, missing import, missing `pbxproj` entry, renamed-symbol fallout from your prior commit in the same branch. Push the fix directly to PR head; `pr-test.yml` re-runs.
+- **Ask before fixing** anything architecturally significant, ambiguous, or that touches a different file than the failure surface.
+- **Ignore** dependabot comments, label changes, draft transitions — say so in one line and stay quiet.
+- **Test-assertion failures get investigated, not suppressed.** They're the most likely place to be a real bug.
+- **Stop after 3 unconverged rounds** and surface to the human. Loops that haven't converged in three pushes usually need a different shape, not another patch.
+
+**When to use:** any PR with auto-merge enabled, or any PR where the human asked you to monitor + autofix. **When to skip:** docs-only PRs that don't run `pr-test.yml`, drafts, anything the human is actively reviewing. Local-Mac sessions don't sleep and don't need the heartbeat — webhook delivery alone is enough there. The whole pattern is optional; the doc above ships fine without it. It just shortens the human-in-the-loop interval from "next ping" to "real time" on the cloud harness, which is the difference between a 25-minute autofix loop and a multi-hour one.
+
 ### Dependabot for action pin maintenance
 
 Drop a `.github/dependabot.yml` so Dependabot opens PRs when any pinned action publishes a new release. It also bumps the `# vX.Y.Z` inline comment if you use the recommended SHA + comment format.
